@@ -1,0 +1,135 @@
+name: iOS TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact private INTRASE commit to release
+        required: true
+      whats_new:
+        description: TestFlight What to Test notes
+        required: false
+        default: 'Thử đăng ký, đăng nhập, học tập, điểm danh và cộng đồng INTRASE.'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: intrase-testflight
+  cancel-in-progress: false
+
+jobs:
+  build-and-upload:
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      TEAM_ID: ${{ secrets.TEAM_ID }}
+      BUNDLE_ID: vn.intrase.app
+      BETA_GROUP: Team (Expo)
+      BETA_LOCALE: vi
+      BUILD_DIR: ${{ github.workspace }}/intrase/build
+    steps:
+      - name: Check out selected private app commit
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: dulieuquocgia/INTRASE
+          ref: ${{ inputs.release_commit }}
+          ssh-key: ${{ secrets.INTRASE_DEPLOY_KEY }}
+          persist-credentials: false
+          path: intrase
+
+      - name: Verify exact source commit
+        env:
+          EXPECTED_RELEASE_COMMIT: ${{ inputs.release_commit }}
+        run: |
+          test "$GITHUB_REF" = 'refs/heads/main'
+          test "$(git -C intrase rev-parse HEAD)" = "$EXPECTED_RELEASE_COMMIT"
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: intrase/mobile/package-lock.json
+
+      - name: Select Xcode and verify toolchain
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+          xcodebuild -version | awk '/Xcode/ { split($2,v,"."); if (v[1] < 26 || (v[1] == 26 && v[2] < 4)) exit 1 }'
+
+      - name: Install App Store Connect tooling
+        run: pip3 install --break-system-packages --quiet -r intrase/tools/requirements.txt
+
+      - name: Write App Store Connect API key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          : "${ASC_KEY_ID:?Missing ASC_KEY_ID}"
+          : "${ASC_ISSUER_ID:?Missing ASC_ISSUER_ID}"
+          : "${TEAM_ID:?Missing TEAM_ID}"
+          : "${ASC_KEY_P8:?Missing ASC_KEY_P8}"
+          mkdir -p "$HOME/private_keys"
+          umask 077
+          KEY_PATH="$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          printf '%s' "$ASC_KEY_P8" > "$KEY_PATH"
+          echo "ASC_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Verify INTRASE app record
+        run: python3 intrase/tools/asc.py find-app --bundle-id "$BUNDLE_ID"
+
+      - name: Install dependencies and validate Expo app
+        working-directory: intrase/mobile
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npx expo lint
+          npx expo-doctor
+
+      - name: Set unique TestFlight build number
+        run: |
+          BUILD_NUMBER=$((1000 + GITHUB_RUN_NUMBER * 10 + GITHUB_RUN_ATTEMPT))
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+          node -e 'const fs=require("fs");const p="intrase/mobile/app.json";const j=JSON.parse(fs.readFileSync(p));j.expo.ios.buildNumber=process.argv[1];fs.writeFileSync(p,JSON.stringify(j,null,2)+"\n")' "$BUILD_NUMBER"
+
+      - name: Generate native iOS project
+        working-directory: intrase/mobile
+        env:
+          CI: '1'
+        run: npx expo prebuild --clean --platform ios --no-install
+
+      - name: Install CocoaPods dependencies
+        working-directory: intrase/mobile/ios
+        run: |
+          if ! command -v pod >/dev/null 2>&1; then sudo gem install cocoapods --no-document; fi
+          pod install --repo-update
+
+      - name: Build signed IPA
+        run: intrase/deploy/build-ios-github.sh
+
+      - name: Validate and upload to TestFlight
+        run: |
+          IPA=$(find "$BUILD_DIR/ipa" -maxdepth 1 -name '*.ipa' -print -quit)
+          intrase/deploy/upload-testflight-ipa.sh "$IPA"
+
+      - name: Wait for Apple processing and distribute
+        env:
+          WHATS_NEW: ${{ inputs.whats_new }}
+        run: |
+          python3 intrase/tools/asc.py wait-build --bundle-id "$BUNDLE_ID" --build "$BUILD_NUMBER"
+          python3 intrase/tools/asc.py distribute --bundle-id "$BUNDLE_ID" --build "$BUILD_NUMBER" \
+            --group "$BETA_GROUP" --locale "$BETA_LOCALE" --whats-new "$WHATS_NEW"
+
+      - name: Remove App Store Connect key
+        if: always()
+        run: rm -f "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+
+      - name: Save IPA artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: INTRASE-ipa
+          path: intrase/build/ipa/*.ipa
+          if-no-files-found: ignore
+          retention-days: 3
