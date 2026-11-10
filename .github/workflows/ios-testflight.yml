@@ -85,7 +85,9 @@ jobs:
           npm ci
           npx tsc --noEmit
           npx expo lint
-          npx expo-doctor
+          # Validate against this installed SDK patch manifest, preserving the tested lockfile.
+          # Online lookup suggests newer patch releases; native dependency upgrades are separate.
+          EXPO_OFFLINE=1 npx expo-doctor
 
       - name: Set unique TestFlight build number
         run: |
