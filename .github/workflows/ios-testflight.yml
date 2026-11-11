@@ -107,6 +107,14 @@ jobs:
           if ! command -v pod >/dev/null 2>&1; then sudo gem install cocoapods --no-document; fi
           pod install --repo-update
 
+      - name: Reclaim identified expired-runner development identity
+        # Exact development identity used by INTRASE run42938306564's archive.
+        # Its private key lived only on that ephemeral runner. Never revoke distribution identities.
+        run: python3 intrase/tools/asc.py revoke-development-certificate --sha1 03312C3A31C4CFE3A7AF4C6E2E49CB685E8512B5
+
+      - name: Snapshot runner development identities
+        run: python3 intrase/tools/asc.py snapshot-runner-development-certificates --output "$BUILD_DIR/development-identities-before.txt"
+
       - name: Build signed IPA
         run: intrase/deploy/build-ios-github.sh
 
@@ -122,6 +130,15 @@ jobs:
           python3 intrase/tools/asc.py wait-build --bundle-id "$BUNDLE_ID" --build "$BUILD_NUMBER"
           python3 intrase/tools/asc.py distribute --bundle-id "$BUNDLE_ID" --build "$BUILD_NUMBER" \
             --group "$BETA_GROUP" --locale "$BETA_LOCALE" --whats-new "$WHATS_NEW"
+
+      - name: Remove only this runner's temporary development certificate
+        if: always()
+        run: |
+          BASELINE="$BUILD_DIR/development-identities-before.txt"
+          APP="$BUILD_DIR/INTRASE.xcarchive/Products/Applications/INTRASE.app"
+          if [ -f "$BASELINE" ] && [ -d "$APP" ]; then
+            python3 intrase/tools/asc.py revoke-runner-development-certificates --baseline-file "$BASELINE" --signed-app "$APP"
+          fi
 
       - name: Remove App Store Connect key
         if: always()
