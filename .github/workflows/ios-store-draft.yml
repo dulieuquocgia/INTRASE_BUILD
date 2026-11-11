@@ -16,7 +16,7 @@ concurrency:
 jobs:
   select-draft:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -48,4 +48,5 @@ jobs:
           trap 'rm -f "$KEY_PATH"' EXIT
           printf '%s' "$ASC_KEY_P8" > "$KEY_PATH"
           export ASC_KEY_PATH="$KEY_PATH"
+          python tools/asc.py wait-build --bundle-id vn.intrase.app --build "$BUILD_NUMBER" --timeout 480
           python tools/select_store_draft.py --build "$BUILD_NUMBER"
