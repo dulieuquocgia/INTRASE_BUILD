@@ -9,6 +9,10 @@ on:
         description: Register the bundle identifier without building
         type: boolean
         default: false
+      archive_only:
+        description: Build, sign, verify and retain the IPA without App Store Connect upload
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -24,6 +28,15 @@ jobs:
       TEAM_ID: ${{ secrets.TEAM_ID }}
       EXPO_PUBLIC_API_URL: https://duykhoa.webcode.dev
     steps:
+      - name: Validate release mode
+        env:
+          REGISTER_ONLY: ${{ inputs.register_only }}
+          ARCHIVE_ONLY: ${{ inputs.archive_only }}
+        run: |
+          if [[ "$REGISTER_ONLY" == true && "$ARCHIVE_ONLY" == true ]]; then
+            echo 'Choose either register_only or archive_only, not both.' >&2
+            exit 1
+          fi
       - name: Check out the selected private source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
@@ -56,7 +69,7 @@ jobs:
       - name: Register Duy Khoa bundle identifier
         run: python app/tools/apple_release.py register-bundle
       - name: Check App Store Connect record
-        if: ${{ !inputs.register_only }}
+        if: ${{ !inputs.register_only && !inputs.archive_only }}
         run: python app/tools/apple_release.py find-app
       - name: Validate and generate native app
         if: ${{ !inputs.register_only }}
@@ -79,7 +92,7 @@ jobs:
         if: ${{ !inputs.register_only }}
         run: bash app/deploy/build-ios.sh
       - name: Validate and upload to TestFlight
-        if: ${{ !inputs.register_only }}
+        if: ${{ !inputs.register_only && !inputs.archive_only }}
         run: |
           IPA=$(find app/build/ipa -maxdepth 1 -name '*.ipa' -print -quit)
           test -s "$IPA"
