@@ -1,4 +1,4 @@
-name: Duy Khoa iOS TestFlight
+name: 191SNK iOS TestFlight
 on:
   workflow_dispatch:
     inputs:
@@ -26,7 +26,7 @@ jobs:
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       TEAM_ID: ${{ secrets.TEAM_ID }}
-      EXPO_PUBLIC_API_URL: https://duykhoa.webcode.dev
+      EXPO_PUBLIC_API_URL: https://191snk.webcode.dev
     steps:
       - name: Validate release mode
         env:
