@@ -71,6 +71,53 @@ jobs:
       - name: Check App Store Connect record
         if: ${{ !inputs.register_only && !inputs.archive_only }}
         run: python app/tools/apple_release.py find-app
+      - name: Revoke the identified previous 191SNK development certificate
+        if: ${{ !inputs.register_only && !inputs.archive_only }}
+        working-directory: app
+        run: |
+          python - <<'PYTHON'
+          from base64 import b64decode
+          from datetime import datetime, timezone
+          from cryptography import x509
+          from cryptography.hazmat.primitives.hashes import SHA1
+          from tools.apple_release import api
+
+          target = "795T6JYF8F"
+          expected_fingerprint = "245E109A8B40A9B780F119222B498DE2035151AA"
+          params = {
+              "filter[certificateType]": "DEVELOPMENT,IOS_DEVELOPMENT",
+              "fields[certificates]": "certificateType,displayName,certificateContent,activated",
+              "limit": 200,
+          }
+          def active_development():
+              result = api("GET", "/certificates", params=params)
+              if result.get("links", {}).get("next"):
+                  raise SystemExit("Certificate inventory is incomplete")
+              return [
+                  (item, x509.load_der_x509_certificate(b64decode(item["attributes"]["certificateContent"])))
+                  for item in result["data"]
+                  if item["attributes"].get("activated") is not False
+              ]
+
+          records = active_development()
+          if not any(item["id"] == target for item, _ in records):
+              raise SystemExit("The expected active certificate could not be verified")
+          now = datetime.now(timezone.utc)
+          valid = [(item, cert) for item, cert in records if cert.not_valid_before_utc <= now < cert.not_valid_after_utc]
+          valid.sort(key=lambda row: row[1].not_valid_before_utc, reverse=True)
+          if not valid:
+              raise SystemExit("No currently valid development certificate")
+          item, cert = valid[0]
+          print(f"Latest Apple Development certificate: {item['id']}, issued {cert.not_valid_before_utc.isoformat()}", flush=True)
+          if (item["id"] != target or
+                  cert.fingerprint(SHA1()).hex().upper() != expected_fingerprint or
+                  item["attributes"]["certificateType"] not in ("DEVELOPMENT", "IOS_DEVELOPMENT") or
+                  "Created via API" not in item["attributes"]["displayName"] or
+                  (len(valid) > 1 and cert.not_valid_before_utc == valid[1][1].not_valid_before_utc)):
+              raise SystemExit("The newest certificate does not match the known 191SNK build identity")
+          api("DELETE", "/certificates/" + target)
+          print(f"Revoked one Apple Development certificate: {target}", flush=True)
+          PYTHON
       - name: Validate and generate native app
         if: ${{ !inputs.register_only }}
         working-directory: app/mobile
