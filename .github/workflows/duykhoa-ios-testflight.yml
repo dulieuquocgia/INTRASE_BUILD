@@ -1,0 +1,99 @@
+name: Duy Khoa iOS TestFlight
+on:
+  workflow_dispatch:
+    inputs:
+      release_commit:
+        description: Exact commit in the private DUY_KHOA repository
+        required: true
+      register_only:
+        description: Register the bundle identifier without building
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: duykhoa-testflight
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      TEAM_ID: ${{ secrets.TEAM_ID }}
+      EXPO_PUBLIC_API_URL: https://duykhoa.webcode.dev
+    steps:
+      - name: Check out the selected private source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: dulieuquocgia/DUY_KHOA
+          ref: ${{ inputs.release_commit }}
+          ssh-key: ${{ secrets.DUYKHOA_DEPLOY_KEY }}
+          persist-credentials: false
+          path: app
+      - name: Verify source revision
+        env:
+          EXPECTED_SHA: ${{ inputs.release_commit }}
+        run: test "$(git -C app rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/mobile/package-lock.json
+      - name: Prepare Apple API credentials
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/apple-tools"
+          "$RUNNER_TEMP/apple-tools/bin/pip" install 'requests>=2.32,<3' 'PyJWT[crypto]>=2.10,<3'
+          echo "$RUNNER_TEMP/apple-tools/bin" >> "$GITHUB_PATH"
+          mkdir -p "$HOME/private_keys"
+          umask 077
+          KEY_PATH="$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          printf '%s' "$ASC_KEY_P8" > "$KEY_PATH"
+          echo "ASC_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+      - name: Register Duy Khoa bundle identifier
+        run: python app/tools/apple_release.py register-bundle
+      - name: Check App Store Connect record
+        if: ${{ !inputs.register_only }}
+        run: python app/tools/apple_release.py find-app
+      - name: Validate and generate native app
+        if: ${{ !inputs.register_only }}
+        working-directory: app/mobile
+        env:
+          CI: '1'
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version | awk '/Xcode/ { split($2,v,"."); if (v[1] < 26 || (v[1] == 26 && v[2] < 4)) exit 1 }'
+          npm ci
+          npx tsc --noEmit
+          EXPO_OFFLINE=1 npx expo-doctor
+          BUILD_NUMBER=$((1000 + GITHUB_RUN_NUMBER * 10 + GITHUB_RUN_ATTEMPT))
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+          node -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync("app.json"));j.expo.ios.buildNumber=process.argv[1];fs.writeFileSync("app.json",JSON.stringify(j,null,2)+"\n")' "$BUILD_NUMBER"
+          npx expo prebuild --clean --platform ios --no-install
+          cd ios
+          pod install --repo-update
+      - name: Build and verify signed archive
+        if: ${{ !inputs.register_only }}
+        run: bash app/deploy/build-ios.sh
+      - name: Validate and upload to TestFlight
+        if: ${{ !inputs.register_only }}
+        run: |
+          IPA=$(find app/build/ipa -maxdepth 1 -name '*.ipa' -print -quit)
+          test -s "$IPA"
+          xcrun altool --validate-app -f "$IPA" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+          xcrun altool --upload-app -f "$IPA" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+          python app/tools/apple_release.py wait-build --build-number "$BUILD_NUMBER"
+      - name: Remove Apple API key from runner
+        if: always()
+        run: rm -f "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+      - name: Retain the verified IPA temporarily
+        if: ${{ always() && !inputs.register_only }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: DuyKhoa-ipa
+          path: app/build/ipa/*.ipa
+          if-no-files-found: ignore
+          retention-days: 3
