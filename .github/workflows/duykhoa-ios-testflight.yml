@@ -1,4 +1,4 @@
-name: 191SNK iOS TestFlight
+name: Pikachu iOS TestFlight
 on:
   workflow_dispatch:
     inputs:
@@ -16,7 +16,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: duykhoa-testflight
+  group: pikachu-testflight
   cancel-in-progress: false
 jobs:
   build:
@@ -26,7 +26,7 @@ jobs:
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       TEAM_ID: ${{ secrets.TEAM_ID }}
-      EXPO_PUBLIC_API_URL: https://191snk.webcode.dev
+      EXPO_PUBLIC_API_URL: https://pikachu.webcode.dev
     steps:
       - name: Validate release mode
         env:
@@ -106,7 +106,7 @@ jobs:
         if: ${{ always() && !inputs.register_only }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: DuyKhoa-ipa
+          name: Pikachu-ipa
           path: app/build/ipa/*.ipa
           if-no-files-found: ignore
           retention-days: 3
