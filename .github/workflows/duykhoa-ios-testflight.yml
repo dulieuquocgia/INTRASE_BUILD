@@ -71,6 +71,48 @@ jobs:
       - name: Check App Store Connect record
         if: ${{ !inputs.register_only && !inputs.archive_only }}
         run: python app/tools/apple_release.py find-app
+      - name: Revoke the newest eligible Apple Development certificate once
+        if: ${{ !inputs.register_only && !inputs.archive_only }}
+        working-directory: app
+        run: |
+          python - <<'PYTHON'
+          import os
+          from base64 import b64decode
+          from datetime import datetime, timezone
+          from cryptography import x509
+          from tools.apple_release import api
+
+          params = {
+              "filter[certificateType]": "DEVELOPMENT,IOS_DEVELOPMENT",
+              "fields[certificates]": "certificateType,displayName,certificateContent,activated",
+              "limit": 200,
+          }
+          def active_development():
+              result = api("GET", "/certificates", params=params)
+              if result.get("links", {}).get("next"):
+                  raise SystemExit("Certificate inventory is incomplete")
+              return [
+                  (item, x509.load_der_x509_certificate(b64decode(item["attributes"]["certificateContent"])))
+                  for item in result["data"]
+                  if item["attributes"].get("activated") is not False
+              ]
+
+          records = active_development()
+          now = datetime.now(timezone.utc)
+          valid = [(item, cert) for item, cert in records if cert.not_valid_before_utc <= now < cert.not_valid_after_utc]
+          valid.sort(key=lambda row: row[1].not_valid_before_utc, reverse=True)
+          if not valid:
+              raise SystemExit("No currently valid development certificate")
+          item, cert = valid[0]
+          print(f"Latest Apple Development certificate: {item['id']}, issued {cert.not_valid_before_utc.isoformat()}", flush=True)
+          if ("Created via API" not in item["attributes"]["displayName"] or
+                  (len(valid) > 1 and cert.not_valid_before_utc == valid[1][1].not_valid_before_utc)):
+              raise SystemExit("The newest development certificate is ambiguous or not runner-managed")
+          if os.environ["GITHUB_RUN_ATTEMPT"] != "1":
+              raise SystemExit("This one-time revocation cannot be repeated by rerunning the workflow")
+          api("DELETE", "/certificates/" + item["id"])
+          print(f"Revoked one Apple Development certificate: {item['id']}", flush=True)
+          PYTHON
       - name: Validate and generate native app
         if: ${{ !inputs.register_only }}
         working-directory: app/mobile
