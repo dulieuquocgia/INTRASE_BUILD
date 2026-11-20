@@ -88,6 +88,9 @@ jobs:
           npx expo prebuild --clean --platform ios --no-install
           cd ios
           pod install --repo-update
+      - name: Prepare Pikachu App Store signing
+        if: ${{ !inputs.register_only }}
+        run: python app/tools/pikachu_store_signing.py
       - name: Build and verify signed archive
         if: ${{ !inputs.register_only }}
         run: bash app/deploy/build-ios.sh
