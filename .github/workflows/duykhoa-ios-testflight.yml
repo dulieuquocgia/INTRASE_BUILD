@@ -88,42 +88,6 @@ jobs:
           npx expo prebuild --clean --platform ios --no-install
           cd ios
           pod install --repo-update
-      - name: Revoke one current Apple Distribution certificate
-        if: ${{ !inputs.register_only && !inputs.archive_only && github.run_attempt == 1 }}
-        working-directory: app/tools
-        run: |
-          python - <<'PYTHON'
-          import base64
-          import os
-          from datetime import datetime, timezone
-          from cryptography import x509
-          from cryptography.x509.oid import NameOID
-          from apple_release import api, find_app
-
-          if find_app()["id"] != "6837360846":
-              raise SystemExit("Unexpected App Store Connect app")
-          team = os.environ["TEAM_ID"]
-          result = api("GET", "/certificates", params={"limit": 200})
-          if result.get("links", {}).get("next"):
-              raise SystemExit("Certificate list was not complete")
-          matches = []
-          now = datetime.now(timezone.utc)
-          for item in result["data"]:
-              attrs = item["attributes"]
-              if attrs["certificateType"] != "DISTRIBUTION":
-                  continue
-              cert = x509.load_der_x509_certificate(base64.b64decode(attrs["certificateContent"]))
-              if team not in [x.value for x in cert.subject.get_attributes_for_oid(NameOID.ORGANIZATIONAL_UNIT_NAME)]:
-                  continue
-              if cert.not_valid_after_utc > now:
-                  matches.append((cert.not_valid_before_utc, item["id"]))
-          matches.sort(reverse=True)
-          if not matches or (len(matches) > 1 and matches[0][0] == matches[1][0]):
-              raise SystemExit("No unambiguous latest active Distribution certificate")
-          issued, cert_id = matches[0]
-          api("DELETE", f"/certificates/{cert_id}")
-          print(f"Revoked one Apple Distribution certificate {cert_id}, issued {issued.isoformat()}", flush=True)
-          PYTHON
       - name: Prepare Pikachu App Store signing
         if: ${{ !inputs.register_only }}
         run: python app/tools/pikachu_store_signing.py
